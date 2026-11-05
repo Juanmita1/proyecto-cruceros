@@ -1,0 +1,51 @@
+# Publica la PWA "Lector de Bagtags" en GitHub Pages (HTTPS gratuito).
+# Activar una vez: Settings → Pages → Source: "GitHub Actions".
+name: Desplegar Bagtags PWA
+
+on:
+  push:
+    branches: [main]
+    paths: ['bagtags-pwa/**', '.github/workflows/deploy-bagtags.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bagtags-pwa
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bagtags-pwa/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+        env:
+          # GitHub Pages sirve el sitio en /<nombre-del-repositorio>/
+          BASE_PATH: /${{ github.event.repository.name }}/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: bagtags-pwa/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
