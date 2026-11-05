@@ -52,43 +52,91 @@ Un navegador no puede mandar por sí solo un correo con adjunto a direcciones fi
 | Sin red | Queda **en cola**; se envía al recuperar la conexión, al abrir la app y cada 5 min | Depende de la app de correo |
 | Destinatarios | Automáticos | Se **copian al portapapeles** para pegarlos en "Para"; el navegador no puede rellenarlos |
 
-### Crear el flujo de Power Automate (una vez)
+### Crear el flujo de Power Automate (una vez, unos 10 minutos)
 
-1. En Power Automate: **Crear → Flujo de nube instantáneo → "Cuando se recibe una solicitud HTTP"**.
-2. En "Quién puede desencadenar el flujo", elegir **Cualquiera**. La URL generada es secreta: compártela solo en la configuración de la app.
-3. En "Esquema JSON del cuerpo de la solicitud", pegar:
+#### Antes de empezar
+- **Licencia:** el disparador "Cuando se recibe una solicitud HTTP" es **premium**. La cuenta que crea el flujo necesita Power Automate Premium (o Per-flow). Con la licencia básica de Microsoft 365 no aparece o no se puede guardar.
+- **Correo:** el email se envía desde el buzón de Outlook de esa cuenta. Lo ideal es una cuenta de servicio (por ejemplo, `bagtags@empresa.es`), no la personal de nadie.
+
+#### 1. Crear el flujo
+1. Entrar en **make.powerautomate.com** con esa cuenta.
+2. Ir a **Crear → Flujo de nube instantáneo**.
+3. Poner de nombre "Bagtags – envío de tickets".
+4. Elegir el desencadenador **"Cuando se recibe una solicitud HTTP"** y pulsar **Crear**.
+
+#### 2. Configurar el desencadenador
+1. En **"Quién puede desencadenar el flujo"**, elegir **Cualquiera**. La app no inicia sesión en Microsoft, así que con las otras opciones el envío falla.
+2. Pulsar **"Usar una carga de ejemplo para generar el esquema"** y pegar este ejemplo, que tiene el mismo formato que envía la app:
 
    ```json
    {
-     "type": "object",
-     "properties": {
-       "to": { "type": "string" },
-       "subject": { "type": "string" },
-       "body": { "type": "string" },
-       "attachment": {
-         "type": "object",
-         "properties": {
-           "name": { "type": "string" },
-           "contentType": { "type": "string" },
-           "contentBytes": { "type": "string" }
-         }
-       },
-       "ticket": { "type": "object" }
+     "to": "supervisor@empresa.es;jefe.turno@empresa.es",
+     "subject": "[Bagtags] TODO OK · IB3167 · MAD T4S · 05/11/2026 10:32",
+     "body": "Resultado: TODO OK\nVigilante: TIP12345",
+     "attachment": {
+       "name": "ticket_MAD_20261105_1032_OK.pdf",
+       "contentType": "application/pdf",
+       "contentBytes": "JVBERi0xLjMK"
+     },
+     "ticket": {
+       "id": "abc", "status": "ok", "openedAt": "2026-11-05T10:20:00.000Z",
+       "closedAt": "2026-11-05T10:32:00.000Z", "guardId": "TIP12345",
+       "airport": "MAD", "terminal": "T4S", "post": "Cinta 7", "flight": "IB3167",
+       "claims": 2, "found": 2, "missing": [], "negatives": 3, "photos": 0
      }
    }
    ```
 
-4. Añadir la acción **Office 365 Outlook → Enviar un correo electrónico (V2)**:
-   - **Para**: `to` (varias direcciones separadas por `;`)
-   - **Asunto**: `subject`
-   - **Cuerpo**: `body`
-   - **Adjuntos → Nombre**: `attachment.name`
-   - **Adjuntos → Contenido**: expresión `base64ToBinary(triggerBody()?['attachment']?['contentBytes'])`
-5. Opcional: añadir **Respuesta** con código `200`, o guardar `ticket` en una lista de SharePoint.
-6. Guardar, copiar la **URL HTTP POST** y pegarla en la app, en Configuración → URL del flujo.
-7. Comprobar con **Enviar correo de prueba**.
+3. Pulsar **Listo**. Con esto ya se pueden elegir `to`, `subject` y el resto de campos en los pasos siguientes.
 
-El campo `ticket` lleva un resumen estructurado (estado, vuelo, recogidas, no aparecidas, descartadas) **sin nombre ni PNR**.
+#### 3. Añadir el envío del correo
+1. Pulsar **+ Nuevo paso** y elegir **Office 365 Outlook → "Enviar un correo electrónico (V2)"**.
+2. Rellenar los campos:
+
+   | Campo | Valor |
+   | --- | --- |
+   | **Para** | Contenido dinámico `to`, o mejor direcciones fijas (ver "Seguridad" más abajo) |
+   | **Asunto** | `subject` |
+   | **Cuerpo** | Expresión: `replace(triggerBody()?['body'], decodeUriComponent('%0A'), '<br>')` |
+   | **Adjuntos → Nombre** | `attachment` → `name` |
+   | **Adjuntos → Contenido** | Expresión: `base64ToBinary(triggerBody()?['attachment']?['contentBytes'])` |
+
+- **Por qué esa expresión en el Cuerpo:** la app envía el texto con saltos de línea normales, que el cuerpo HTML de Outlook ignora. La expresión los convierte en `<br>`. Con solo `body`, el correo llega en un único párrafo.
+- **Dónde escribir las expresiones:** en la pestaña **Expresión** del panel de contenido dinámico.
+- **Adjuntos:** si no se ven los campos, pulsar **Mostrar opciones avanzadas**.
+
+#### 4. Añadir la respuesta (recomendado)
+1. Pulsar **+ Nuevo paso** y elegir **"Respuesta"**.
+2. Poner el código de estado **200**.
+3. Dejarla como **último paso**, después del correo.
+
+Sin este paso, Power Automate contesta "recibido" antes de enviar el correo, y la app marca el ticket como enviado aunque luego el envío falle. Con la Respuesta al final, si el correo falla la app recibe un error, deja el ticket **en cola** y lo reintenta.
+
+#### 5. Guardar y copiar la URL
+1. Pulsar **Guardar**.
+2. Abrir de nuevo el desencadenador: ahora muestra la **URL HTTP POST**. Copiarla.
+3. Es una URL larga que contiene la clave de acceso (`sig=…` o similar). **Hay que tratarla como una contraseña.**
+
+#### 6. Configurarlo en la app
+1. Abrir **⚙ Configuración → Envío por email**.
+2. Poner los destinatarios y pegar la URL.
+3. Pulsar **Guardar cambios** y después **Enviar correo de prueba**.
+4. Si la app muestra "✔ Correo de prueba enviado" y el correo llega con el PDF adjunto, ya está.
+5. Para el resto de móviles: **Exportar JSON** en este y **Importar JSON** en los demás.
+
+#### Si falla la prueba
+- **Revisar el historial del flujo:** en Power Automate, abrir el flujo → **Historial de ejecuciones (28 días)**. Ahí se ve qué paso falló.
+- **"No se pudo conectar con Power Automate"**:
+  - Revisar que la URL esté completa.
+  - Revisar que el desencadenador esté en **Cualquiera**.
+  - Si la organización aplica directivas que bloquean llamadas HTTP anónimas o llamadas desde el navegador, hablar con el administrador de Power Platform.
+- **"El servidor respondió 4xx/5xx"**: casi siempre es un campo mal puesto en el correo. Lo habitual es la expresión del adjunto; comprobar que diga exactamente `base64ToBinary(...)`.
+
+#### Seguridad
+Cualquiera que tenga la URL puede lanzar el flujo. Si en **Para** se usa el campo `to` que manda la app, esa persona podría enviar correos a cualquier dirección desde vuestra cuenta. Lo más seguro es **escribir las direcciones fijas directamente en "Para"** dentro del flujo. Así la lista de destinatarios de la app solo sirve para la opción de compartir desde el móvil, y una URL filtrada solo permite mandar correos a vuestros supervisores.
+
+#### Opcional: guardar cada ticket en SharePoint
+Añadir un paso **SharePoint → "Crear elemento"** con los campos de `ticket` (`status`, `flight`, `found`, `missing`, `negatives`…). Esos campos no incluyen el nombre ni el PNR del pasajero.
 
 ## 3. Privacidad
 
