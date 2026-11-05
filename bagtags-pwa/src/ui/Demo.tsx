@@ -25,22 +25,21 @@ function Barcode({ text, format, label }: { text: string; format: 'ITF' | 'PDF41
 }
 
 export function Demo() {
-  const { shift } = useApp();
+  const { prefs } = useApp();
   const [sc] = useState(demoScenarios);
   const [bpFormat, setBpFormat] = useState<'PDF417' | 'QRCode' | 'Aztec'>('PDF417');
 
   const startSim = async () => {
-    if (!getState().shift || getState().shift?.endedAt) {
-      await A.startShift({ guardId: 'DEMO', airport: 'MAD', terminal: 'T4S', post: 'Demostración', flights: ['IB3167'], startedAt: Date.now() });
-    }
     setState({ demoSim: true });
-    navigate({ name: 'control' });
+    if (!getState().prefs.guard) return void A.saveGuard({ guardId: 'DEMO', airport: 'MAD', terminal: 'T4S', post: 'Cinta 7' });
+    if (getState().ticket?.status !== 'open') await A.nextTicket();
+    else navigate({ name: 'ticket' });
   };
 
   return (
     <div class="screen screen--form">
       <header class="topbar">
-        <button class="iconbtn" onClick={() => navigate({ name: shift && !shift.endedAt ? 'control' : 'start' })} aria-label="Volver">
+        <button class="iconbtn" onClick={() => navigate({ name: prefs.guard ? 'ticket' : 'guard' })} aria-label="Volver">
           ←
         </button>
         <div class="topbar__title">
@@ -50,11 +49,11 @@ export function Demo() {
       </header>
       <div class="form">
         <p>
-          Abra esta página en otro dispositivo (o imprímala) y escanee los códigos con la app. Orden: primero los <strong>resguardos</strong> (o la tarjeta de embarque), pulse{' '}
-          <strong>MALETAS →</strong> y escanee las <strong>etiquetas</strong>.
+          Abra esta página en otro dispositivo (o imprímala) y escanee los códigos con la app: primero los <strong>resguardos</strong> (o la tarjeta de embarque), pulse{' '}
+          <strong>VIGILAR CINTA →</strong> y escanee las <strong>maletas de la cinta</strong> en orden.
         </p>
         <button class="btn btn--lg btn--primary" onClick={startSim}>
-          ▶ Usar el simulador en la pantalla de control (sin cámara)
+          ▶ Usar el simulador (sin cámara)
         </button>
         <div class="row">
           <span>Formato BCBP:</span>
@@ -80,10 +79,10 @@ export function Demo() {
                 <Barcode key={c} text={c} format="ITF" label={`${c} · ${s.claimsAlpha[i]}`} />
               ))}
             </div>
-            <h4>Etiquetas de maleta</h4>
+            <h4>Maletas que pasan por la cinta (en orden)</h4>
             <div class="demo__grid">
-              {s.bags.map((b) => (
-                <Barcode key={b} text={b} format="ITF" />
+              {s.belt.map((b, i) => (
+                <Barcode key={b} text={b} format="ITF" label={`${i + 1}. ${b}`} />
               ))}
             </div>
           </section>
@@ -93,22 +92,22 @@ export function Demo() {
   );
 }
 
-/** Panel del simulador que aparece en la pantalla de control. */
+/** Panel del simulador que aparece en la pantalla del ticket. */
 export function DemoDrawer() {
-  const { pass } = useApp();
+  const { step } = useApp();
   const [open, setOpen] = useState(true);
   const [sc] = useState(demoScenarios);
   const send = (t: string) => A.handleInput(t, 'demo');
   if (!open)
     return (
-      <button class="demo-fab" onClick={() => setOpen(true)}>
+      <button class="demo-fab" onClick={() => setOpen(true)} aria-label="Mostrar simulador">
         🧪
       </button>
     );
   return (
     <div class="demo-drawer">
       <div class="row">
-        <strong>Simulador</strong>
+        <strong>Simulador · {step === 'claims' ? 'resguardos' : 'cinta'}</strong>
         <button class="iconbtn" onClick={() => setOpen(false)} aria-label="Ocultar">
           ▾
         </button>
@@ -120,18 +119,24 @@ export function DemoDrawer() {
         {sc.map((s: DemoScenario) => (
           <div key={s.id} class="demo-drawer__sc">
             <span>{s.title}</span>
-            {pass.step === 'claims'
+            {step === 'claims'
               ? [
-                  ...(s.bcbp ? [<button key="bp" class="chipbtn" onClick={() => send(s.bcbp!)}>BCBP</button>] : []),
+                  ...(s.bcbp
+                    ? [
+                        <button key="bp" class="chipbtn" onClick={() => send(s.bcbp!)}>
+                          BCBP
+                        </button>,
+                      ]
+                    : []),
                   ...s.claims.map((c, i) => (
                     <button key={c} class="chipbtn" onClick={() => send(c)}>
                       R{i + 1}
                     </button>
                   )),
                 ]
-              : s.bags.map((b, i) => (
-                  <button key={b} class="chipbtn" onClick={() => send(b)}>
-                    M{i + 1}
+              : s.belt.map((b, i) => (
+                  <button key={b} class="chipbtn" onClick={() => send(b)} title={b}>
+                    {i + 1}
                   </button>
                 ))}
           </div>

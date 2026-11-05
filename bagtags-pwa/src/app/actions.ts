@@ -1,15 +1,18 @@
-/**
- * Acciones de la app: turno, flujo de control en salida e incidencias.
- */
+/** Acciones de la app: vigilante, ticket (resguardos → cinta → cierre) y envío. */
 import { classify } from '../domain/classify';
-import { formatTag, tagId, type CodeSource, type TagCode } from '../domain/lpn';
-import { computeOutcome, containsCode, evaluateBag, shouldAutoFinish, type ControlResult } from '../domain/matcher';
+import { formatTag, type CodeSource } from '../domain/lpn';
 import type { AppConfig } from '../domain/config';
-import type { ControlRecord, Incident, Shift } from '../domain/types';
+import type { GuardInfo, PassengerData, Ticket } from '../domain/types';
+import type { BcbpData } from '../domain/bcbp';
+import { allFound, claimFromCode, closeTicket, evaluateBeltScan, hasClaim, markFound, newTicket, reopenTicket } from '../domain/ticket';
 import * as store from '../storage/db';
 import { camera } from '../scanner/camera';
 import { cue, setFeedback } from '../feedback';
-import { emptyPass, getState, navigate, seen, setPass, setState, toast } from './store';
+import { canAutoSend, sendViaPowerAutomate, shareTicket } from '../send/send';
+import { getState, navigate, setState, toast } from './store';
+
+const today = () => new Date().toISOString().slice(0, 10);
+let flashSeq = 0;
 
 // ---------------------------------------------------------------- arranque
 
@@ -18,22 +21,30 @@ export async function init() {
   applyConfig(config);
   setState({ config, prefs });
   void store.requestPersistence();
-  let shift: Shift | null = null;
-  if (prefs.activeShiftId) {
-    shift = (await store.getShift(prefs.activeShiftId)) ?? null;
-    if (shift?.endedAt) shift = null;
-  }
-  await retention();
+  await store.runRetention(config);
+
+  let ticket: Ticket | null = null;
+  if (prefs.activeTicketId) ticket = (await store.getTicket(prefs.activeTicketId)) ?? null;
+  setState({ ticket, step: ticket?.beltAt ? 'belt' : 'claims' });
+  await refreshPending();
+
+  window.addEventListener('online', () => {
+    setState({ online: true });
+    void processQueue();
+  });
+  window.addEventListener('offline', () => setState({ online: false }));
+  window.setInterval(() => void processQueue(), 5 * 60_000);
   window.addEventListener('hashchange', () => {
     if (location.hash === '#demo') navigate({ name: 'demo' });
   });
-  window.setInterval(() => void retention(), 15 * 60_000);
-  if (shift) {
-    await loadShift(shift);
-    navigate(location.hash === '#demo' ? { name: 'demo' } : { name: 'control' });
-  } else {
-    navigate(location.hash === '#demo' ? { name: 'demo' } : { name: 'start' });
-  }
+  void processQueue();
+
+  if (location.hash === '#demo') return navigate({ name: 'demo' });
+  if (!prefs.guard) return navigate({ name: 'guard' });
+  if (ticket && ticket.status !== 'open') return navigate({ name: 'close' });
+  if (!ticket && prefs.guardDate !== today()) return navigate({ name: 'guard' });
+  await ensureTicket();
+  navigate({ name: 'ticket' });
 }
 
 function applyConfig(cfg: AppConfig) {
@@ -46,82 +57,54 @@ export async function updateConfig(cfg: AppConfig) {
   await store.saveConfig(cfg);
   applyConfig(cfg);
   setState({ config: cfg });
+  void processQueue();
 }
 
-async function retention() {
+// ---------------------------------------------------------------- vigilante
+
+export async function saveGuard(guard: GuardInfo) {
   const s = getState();
-  const plan = await store.runRetention(s.config, s.shift?.id);
-  if (plan.controls.length && s.shift) await loadShift(s.shift);
-}
-
-async function loadShift(shift: Shift) {
-  const [controls, incidents] = await Promise.all([store.controlsOf(shift.id), store.incidentsOf(shift.id)]);
-  seen.clear();
-  for (const c of controls) registerSeen(c);
-  setState({
-    shift,
-    pass: emptyPass(),
-    counters: { controls: controls.length, incidents: incidents.length },
-    currentFlight: shift.flights.length === 1 ? shift.flights[0] : getState().currentFlight,
-  });
-}
-
-function registerSeen(c: ControlRecord) {
-  if (c.result === 'mismatch' || c.result === 'already') return;
-  for (const b of c.bags) if (b.status === 'match' || b.status === 'manual') seen.addId(b.id, c.ts);
-}
-
-// ---------------------------------------------------------------- turno
-
-export async function startShift(data: Omit<Shift, 'id' | 'endedAt'>) {
-  const shift: Shift = { ...data, id: store.uid() };
-  await store.putShift(shift);
-  const prefs = {
-    ...getState().prefs,
-    lastGuardId: shift.guardId,
-    lastAirport: shift.airport,
-    lastTerminal: shift.terminal,
-    lastPost: shift.post,
-    recentFlights: [...new Set([...shift.flights, ...getState().prefs.recentFlights])].slice(0, 12),
-    activeShiftId: shift.id,
-  };
+  const prefs = { ...s.prefs, guard, guardDate: today() };
   await store.savePrefs(prefs);
-  setState({ prefs, currentFlight: shift.flights[0] });
-  await loadShift(shift);
-  navigate({ name: 'control' });
+  setState({ prefs });
+  // El ticket abierto (si lo hay) se queda con los datos con los que se abrió, salvo que aún esté vacío.
+  if (s.ticket && s.ticket.status === 'open' && s.ticket.claims.length === 0) await saveTicket({ ...s.ticket, guard });
+  await ensureTicket();
+  navigate({ name: s.ticket && s.ticket.status !== 'open' ? 'close' : 'ticket' });
 }
 
-export async function endShift() {
+// ---------------------------------------------------------------- ticket
+
+async function saveTicket(t: Ticket) {
+  setState({ ticket: t });
+  await store.putTicket(t);
+}
+
+async function setActive(id: string | undefined) {
+  const prefs = { ...getState().prefs, activeTicketId: id };
+  setState({ prefs });
+  await store.savePrefs(prefs);
+}
+
+export async function ensureTicket() {
   const s = getState();
-  if (!s.shift) return;
-  const shift = { ...s.shift, endedAt: Date.now() };
-  await store.putShift(shift);
-  const prefs = { ...s.prefs, activeShiftId: undefined };
-  await store.savePrefs(prefs);
-  camera.stop();
-  setState({ shift, prefs, pass: emptyPass() });
-  navigate({ name: 'report' });
+  if (s.ticket || !s.prefs.guard) return;
+  const t = newTicket(store.uid(), s.prefs.guard, Date.now());
+  await saveTicket(t);
+  await setActive(t.id);
+  setState({ step: 'claims', flash: null, partial: null });
 }
 
-/** Borra los datos del turno ya cerrado y vuelve al inicio. */
-export async function deleteShift(shiftId: string) {
-  await store.deleteShiftData(shiftId);
-  seen.clear();
-  setState({ shift: null, counters: { controls: 0, incidents: 0 }, pass: emptyPass() });
-  navigate({ name: 'start' });
+function passengerFrom(b: BcbpData): PassengerData {
+  const l = b.legs[0];
+  return { name: b.displayName, pnr: l?.pnr ?? '', flight: l?.flight ?? '', from: l?.from ?? '', to: l?.to ?? '', date: l?.date ?? null, seat: l?.seat };
 }
 
-export function setCurrentFlight(f: string | undefined) {
-  setState({ currentFlight: f });
-}
-
-// ---------------------------------------------------------------- flujo de control
-
-/** Punto de entrada de cualquier lectura ya confirmada (cámara, teclado, BT, demo). */
+/** Entrada de cualquier lectura ya confirmada (cámara, teclado, lector BT, demo). */
 export function handleInput(raw: string, source: CodeSource): boolean {
   const s = getState();
-  const p = s.pass;
-  if (p.outcome || p.pendingPartial !== undefined) return false; // pantalla de resultado o confirmación abierta
+  const t = s.ticket;
+  if (!t || t.status !== 'open' || s.partial) return false;
   const c = classify(raw, s.airlines, source);
 
   if (c.kind === 'invalid') {
@@ -132,173 +115,222 @@ export function handleInput(raw: string, source: CodeSource): boolean {
     return false;
   }
 
-  const startedAt = p.startedAt ?? Date.now();
-  const manual = p.manualEntry || source === 'manual';
-
   if (c.kind === 'bcbp') {
-    // Tarjeta de embarque: asocia vuelo; si trae LPN de equipaje los añade como resguardos.
-    const added: TagCode[] = [];
-    if (p.step === 'claims') {
+    // Tarjeta de embarque: datos del pasajero y vuelo; en el paso 1 añade los LPN que traiga.
+    let next: Ticket = { ...t, passenger: passengerFrom(c.data), flight: t.flight || c.data.legs[0]?.flight };
+    let added = 0;
+    if (s.step === 'claims') {
       for (const lpn of c.data.bagTags) {
         const r = classify(lpn, s.airlines, 'bcbp');
-        if (r.kind === 'tag' && !containsCode([...p.claims, ...added], r.code)) added.push(r.code);
+        if (r.kind === 'tag' && !hasClaim(next, r.code)) {
+          next = { ...next, claims: [...next.claims, claimFromCode(r.code)] };
+          added++;
+        }
       }
     }
-    setPass({ bcbp: c.data, startedAt, claims: [...p.claims, ...added] });
+    void saveTicket(next);
     cue('scan');
     const leg = c.data.legs[0];
-    toast(`Tarjeta de embarque: vuelo ${leg?.flight ?? '—'} ${leg ? leg.from + '→' + leg.to : ''}${added.length ? ` · ${added.length} resguardo(s)` : ''}`, 'info');
+    toast(`Tarjeta de embarque: ${leg?.flight ?? ''} ${leg ? leg.from + '→' + leg.to : ''}${added ? ` · ${added} resguardo(s)` : ''}`, 'info');
     return true;
   }
 
   const code = c.code;
-  if (p.step === 'claims') {
-    if (containsCode(p.claims, code)) {
-      // El mismo código otra vez: en la práctica es la etiqueta de la maleta → paso 2 automático.
-      if (s.config.autoAdvanceOnRepeat && (source === 'camera' || source === 'keyboard')) {
-        setPass({ step: 'bags' });
-        return addBag(code, startedAt, manual);
-      }
+  if (s.step === 'claims') {
+    if (hasClaim(t, code)) {
       toast(`Resguardo ${formatTag(code)} ya leído`, 'warn');
       return false;
     }
-    setPass({ claims: [...p.claims, code], startedAt, manualEntry: manual });
+    void saveTicket({ ...t, claims: [...t.claims, claimFromCode(code)] });
     cue('scan');
     return true;
   }
-  return addBag(code, startedAt, manual);
-}
 
-function addBag(code: TagCode, startedAt: number, manual: boolean): boolean {
-  const { pass: p, config } = getState();
-  if (p.bags.some((b) => b.code.key === code.key)) {
-    toast(`Maleta ${formatTag(code)} ya escaneada`, 'warn');
-    return false;
+  // Cinta
+  const v = evaluateBeltScan(t.claims, code);
+  const seq = ++flashSeq;
+  switch (v.kind) {
+    case 'match':
+      found(markFound(t, v.claimIndex, Date.now()), v.claimIndex, seq);
+      break;
+    case 'repeat':
+      cue('repeat');
+      setState({ flash: { kind: 'repeat', claimIndex: v.claimIndex, seq } });
+      break;
+    case 'partial':
+      cue('partial');
+      setState({ partial: { claimIndex: v.claimIndex, code: formatTag(code) }, flash: null });
+      break;
+    case 'nomatch':
+      cue('nomatch');
+      void saveTicket({ ...t, negatives: t.negatives + 1 });
+      setState({ flash: { kind: 'nomatch', code: formatTag(code), seq } });
+      break;
   }
-  const ev = evaluateBag(code, p.claims, p.bags, seen);
-  const bags = [...p.bags, ev];
-  setPass({ bags, startedAt, manualEntry: manual });
-  if (ev.status === 'partial') {
-    cue('partial');
-    setPass({ pendingPartial: bags.length - 1 });
-    return true;
-  }
-  cue('scan');
-  if (ev.status === 'nomatch' || ev.status === 'already' || (config.autoFinish && shouldAutoFinish(p.claims, bags))) void finish();
   return true;
 }
 
-export function goToBags() {
-  setPass({ step: 'bags' });
+function found(next: Ticket, claimIndex: number, seq: number) {
+  void saveTicket(next);
+  if (allFound(next)) {
+    cue('ok');
+    setState({ flash: { kind: 'allfound', seq } });
+    // Todas recogidas: se cierra solo tras mostrar el aviso.
+    window.setTimeout(() => {
+      const s = getState();
+      if (s.flash?.seq === seq && s.ticket?.id === next.id && s.ticket.status === 'open') void closeNow();
+    }, 2500);
+  } else {
+    cue('match');
+    setState({ flash: { kind: 'match', claimIndex, seq } });
+  }
+}
+
+/** Respuesta del vigilante a una coincidencia parcial (etiqueta dañada / de reserva). */
+export function resolvePartial(isHers: boolean) {
+  const s = getState();
+  const t = s.ticket;
+  if (!t || !s.partial) return;
+  const seq = ++flashSeq;
+  const { claimIndex, code } = s.partial;
+  setState({ partial: null });
+  if (isHers) found(markFound(t, claimIndex, Date.now(), true), claimIndex, seq);
+  else {
+    cue('nomatch');
+    void saveTicket({ ...t, negatives: t.negatives + 1 });
+    setState({ flash: { kind: 'nomatch', code, seq } });
+  }
+}
+
+export function clearFlash(seq: number) {
+  if (getState().flash?.seq === seq) setState({ flash: null });
 }
 
 export function removeClaim(i: number) {
-  setPass((p) => ({ claims: p.claims.filter((_, k) => k !== i), bags: [] }));
+  const t = getState().ticket;
+  if (t) void saveTicket({ ...t, claims: t.claims.filter((_, k) => k !== i) });
 }
 
-export function removeBag(i: number) {
-  setPass((p) => ({ bags: p.bags.filter((_, k) => k !== i) }));
+export function startBelt() {
+  const t = getState().ticket;
+  if (!t || t.claims.length === 0) return;
+  void saveTicket({ ...t, beltAt: t.beltAt ?? Date.now() });
+  setState({ step: 'belt', flash: null });
 }
 
-/** Respuesta del vigilante a una coincidencia parcial (etiqueta dañada / lectura incompleta). */
-export function resolvePartial(matches: boolean) {
-  const { pass: p, config } = getState();
-  if (p.pendingPartial === undefined) return;
-  const bags = p.bags.map((b, i) => (i === p.pendingPartial ? { ...b, status: matches ? ('manual' as const) : ('nomatch' as const) } : b));
-  setPass({ bags, pendingPartial: undefined });
-  if (!matches || (config.autoFinish && shouldAutoFinish(p.claims, bags))) void finish();
+export function backToClaims() {
+  setState({ step: 'claims', flash: null });
 }
 
-/** Cierra el pasajero actual, guarda el control y muestra el resultado. */
-export async function finish(): Promise<void> {
-  const s = getState();
-  const p = s.pass;
-  if (p.outcome) return;
-  const result = computeOutcome(p.claims, p.bags);
-  if (result === null) return;
-  const control: ControlRecord = {
-    id: store.uid(),
-    shiftId: s.shift!.id,
-    ts: Date.now(),
-    result,
-    claims: p.claims.map(tagId),
-    bags: p.bags.map((b) => ({ id: tagId(b.code), status: b.status })),
-    manualValidation: p.bags.some((b) => b.status === 'manual'),
-    manualEntry: p.manualEntry,
-    flight: passFlight(),
-    durationMs: p.startedAt ? Date.now() - p.startedAt : undefined,
-  };
-  setPass({ outcome: { result, controlId: control.id, at: control.ts } });
-  cue(result === 'ok' ? 'ok' : result === 'mismatch' ? 'mismatch' : result === 'already' ? 'already' : 'incomplete');
-  await store.putControl(control);
-  registerSeen(control);
-  setState((st) => ({ counters: { ...st.counters, controls: st.counters.controls + 1 } }));
+/** Cierra el ticket (cinta terminada o todas recogidas). */
+export async function closeNow() {
+  const t = getState().ticket;
+  if (!t) return;
+  const closed = closeTicket(t, Date.now());
+  if (closed.status === 'missing') cue('missing');
+  await saveTicket(closed);
+  setState({ flash: null, partial: null });
+  navigate({ name: 'close' });
 }
 
-/** Vuelo del pasajero actual: BCBP leído o vuelo seleccionado en el turno. */
-export function passFlight(): string | undefined {
-  const s = getState();
-  return s.pass.bcbp?.legs[0]?.flight ?? s.currentFlight;
+/** Vuelve a la cinta desde el cierre (p. ej. aparece la maleta que faltaba). */
+export async function reopen() {
+  const t = getState().ticket;
+  if (!t) return;
+  await saveTicket(reopenTicket(t));
+  setState({ step: 'belt', flash: null });
+  navigate({ name: 'ticket' });
 }
 
-/** El vigilante da por bueno un INCOMPLETO (p. ej. el pasajero espera otra maleta). */
-export async function confirmIncomplete() {
-  const s = getState();
-  const o = s.pass.outcome;
-  if (!o) return;
-  await patchControl(o.controlId, { result: 'incomplete_confirmed', manualValidation: true });
-  setPass({ outcome: { ...o, result: 'incomplete_confirmed' } });
-  cue('ok');
+export function updateTicket(patch: Partial<Pick<Ticket, 'notes' | 'photos' | 'includePassenger' | 'flight'>>) {
+  const t = getState().ticket;
+  if (t) void saveTicket({ ...t, ...patch });
 }
 
-/** Volver al paso de maletas desde INCOMPLETO (deshace el control guardado). */
-export async function continueScanning() {
-  const s = getState();
-  const o = s.pass.outcome;
-  if (!o) return;
-  const d = await store.db();
-  await d.delete('controls', o.controlId);
-  setState((st) => ({ counters: { ...st.counters, controls: Math.max(0, st.counters.controls - 1) } }));
-  setPass({ outcome: undefined, step: 'bags' });
+/** Termina el ticket actual y abre uno nuevo para el siguiente pasajero. */
+export async function nextTicket() {
+  setState({ ticket: null, flash: null, partial: null, step: 'claims' });
+  await setActive(undefined);
+  if (getState().prefs.guardDate !== today()) return navigate({ name: 'guard' });
+  await ensureTicket();
+  navigate({ name: 'ticket' });
 }
 
-async function patchControl(id: string, patch: Partial<ControlRecord>) {
-  const d = await store.db();
-  const c = await d.get('controls', id);
-  if (c) await d.put('controls', { ...c, ...patch });
+export async function discardTicket() {
+  const t = getState().ticket;
+  if (t) await store.deleteTicket(t.id);
+  await nextTicket();
 }
 
-export function nextPassenger() {
-  setState({ pass: emptyPass() });
+// ---------------------------------------------------------------- envío
+
+async function refreshPending() {
+  const n = (await store.listTickets()).filter((t) => t.send.status === 'pending' || t.send.status === 'failed').length;
+  setState({ pendingCount: n });
 }
 
-// ---------------------------------------------------------------- incidencias
-
-export function openIncident(presetType?: string) {
-  const o = getState().pass.outcome;
-  setPass({ incidentShown: true });
-  navigate({ name: 'incident', controlId: o?.controlId, presetType });
+async function setSend(t: Ticket, send: Ticket['send']) {
+  const next = { ...t, send };
+  await store.putTicket(next);
+  if (getState().ticket?.id === t.id) setState({ ticket: next });
+  await refreshPending();
+  return next;
 }
 
-export async function saveIncident(inc: Omit<Incident, 'id' | 'shiftId' | 'ts'> & { id?: string; ts?: number }) {
-  const s = getState();
-  const isNew = !inc.id;
-  const full: Incident = { ...inc, id: inc.id ?? store.uid(), shiftId: s.shift!.id, ts: inc.ts ?? Date.now() };
-  await store.putIncident(full);
-  if (full.controlId) await patchControl(full.controlId, { incidentId: full.id });
-  if (isNew) setState((st) => ({ counters: { ...st.counters, incidents: st.counters.incidents + 1 } }));
-  return full;
+/**
+ * Envía el ticket cerrado. Con Power Automate configurado lo manda (o lo deja
+ * en cola si no hay red). Devuelve 'sent' | 'queued' | 'needs-share'.
+ */
+export async function sendTicket(t: Ticket): Promise<'sent' | 'queued' | 'needs-share'> {
+  const cfg = getState().config;
+  if (!canAutoSend(cfg)) return 'needs-share';
+  if (!navigator.onLine) {
+    await setSend(t, { status: 'pending', attempts: t.send.attempts, error: 'Sin conexión' });
+    return 'queued';
+  }
+  try {
+    await sendViaPowerAutomate(t, cfg);
+    await setSend(t, { status: 'sent', at: Date.now(), attempts: t.send.attempts + 1 });
+    return 'sent';
+  } catch (e) {
+    await setSend(t, { status: 'failed', attempts: t.send.attempts + 1, error: (e as Error).message });
+    return 'queued';
+  }
 }
 
-export async function deleteIncidentById(id: string) {
-  await store.deleteIncident(id);
-  setState((st) => ({ counters: { ...st.counters, incidents: Math.max(0, st.counters.incidents - 1) } }));
+export async function shareViaPhone(t: Ticket): Promise<boolean> {
+  const r = await shareTicket(t, getState().config);
+  if (r === 'cancelled') return false;
+  // Si estaba en cola para Power Automate, se mantiene; si no, queda como compartido.
+  if (t.send.status !== 'pending' && t.send.status !== 'failed') await setSend(t, { status: 'shared', at: Date.now(), attempts: t.send.attempts });
+  return true;
 }
 
-export const RESULT_TEXT: Record<ControlResult, string> = {
-  ok: 'CORRECTO',
-  incomplete_confirmed: 'CORRECTO',
-  mismatch: 'NO COINCIDE',
-  incomplete: 'INCOMPLETO',
-  already: 'YA CONTROLADA',
-};
+let processing = false;
+/** Reintenta los envíos pendientes (al recuperar la red, al arrancar y cada 5 min). */
+export async function processQueue() {
+  const cfg = getState().config;
+  if (processing || !navigator.onLine || !canAutoSend(cfg)) return;
+  processing = true;
+  try {
+    const pending = (await store.listTickets()).filter((t) => t.send.status === 'pending' || t.send.status === 'failed');
+    let sent = 0;
+    for (const t of pending) {
+      try {
+        await sendViaPowerAutomate(t, cfg);
+        await setSend(t, { status: 'sent', at: Date.now(), attempts: t.send.attempts + 1 });
+        sent++;
+      } catch (e) {
+        await setSend(t, { status: 'failed', attempts: t.send.attempts + 1, error: (e as Error).message });
+      }
+    }
+    if (sent) toast(`${sent} ticket(s) pendiente(s) enviado(s)`, 'ok');
+  } finally {
+    processing = false;
+  }
+}
+
+export async function deleteTicketById(id: string) {
+  await store.deleteTicket(id);
+  await refreshPending();
+}
