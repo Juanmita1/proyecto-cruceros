@@ -23,9 +23,9 @@ export default defineConfig({
       includeAssets: ['icons/*.png', 'icons/icon.svg'],
       manifest: {
         id: './',
-        name: 'Lector de Bagtags — control de equipajes',
+        name: 'Lector de Bagtags — control de equipaje en cinta',
         short_name: 'Bagtags',
-        description: 'Comprueba en la salida de recogida que cada maleta pertenece al pasajero que la lleva. Funciona sin conexión.',
+        description: 'Ticket de control de equipaje en cinta: avisa de qué maletas son del pasajero y envía el PDF por email. Funciona sin conexión.',
         lang: 'es',
         dir: 'ltr',
         start_url: './',

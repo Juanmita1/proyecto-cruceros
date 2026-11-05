@@ -1,34 +1,36 @@
-/** Enrutado de pantallas y elementos globales (aviso, actualización, PIN). */
+/** Enrutado de pantallas y elementos globales (avisos, actualización). */
 import { useApp } from './app/store';
-import { Control } from './ui/Control';
-import { ShiftStart } from './ui/ShiftStart';
-import { IncidentForm } from './ui/IncidentForm';
-import { Report } from './ui/Report';
+import { GuardForm } from './ui/GuardForm';
+import { TicketScreen } from './ui/TicketScreen';
+import { CloseTicket } from './ui/CloseTicket';
+import { History, ViewTicket } from './ui/History';
 import { Settings } from './ui/Settings';
 import { Demo } from './ui/Demo';
 import { Help } from './ui/Help';
-import { PinDialog } from './ui/PinDialog';
 import { applyUpdate } from './pwa';
 
 export function App() {
-  const { route, toast, updateAvailable, shift } = useApp();
+  const { route, toast, updateAvailable, ticket } = useApp();
 
   let screen;
   switch (route.name) {
     case 'loading':
       screen = <div class="splash">Cargando…</div>;
       break;
-    case 'start':
-      screen = <ShiftStart />;
+    case 'guard':
+      screen = <GuardForm />;
       break;
-    case 'control':
-      screen = shift ? <Control /> : <ShiftStart />;
+    case 'ticket':
+      screen = ticket ? <TicketScreen /> : <GuardForm />;
       break;
-    case 'incident':
-      screen = <IncidentForm key={route.incidentId ?? 'new'} controlId={route.controlId} incidentId={route.incidentId} presetType={route.presetType} />;
+    case 'close':
+      screen = ticket ? <CloseTicket /> : <GuardForm />;
       break;
-    case 'report':
-      screen = <Report />;
+    case 'history':
+      screen = <History />;
+      break;
+    case 'view':
+      screen = <ViewTicket ticketId={route.ticketId} />;
       break;
     case 'settings':
       screen = <Settings />;
@@ -49,7 +51,7 @@ export function App() {
           {toast.text}
         </div>
       )}
-      {updateAvailable && route.name !== 'control' && (
+      {updateAvailable && route.name !== 'ticket' && (
         <div class="update">
           Nueva versión disponible
           <button class="btn" onClick={applyUpdate}>
@@ -57,7 +59,6 @@ export function App() {
           </button>
         </div>
       )}
-      <PinDialog />
     </>
   );
 }
