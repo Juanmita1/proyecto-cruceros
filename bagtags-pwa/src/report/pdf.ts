@@ -43,7 +43,7 @@ export async function buildTicketPdf(t: Ticket): Promise<Blob> {
   const ok = t.status === 'ok';
   doc.setFillColor(...((ok ? [0, 150, 70] : [230, 120, 0]) as [number, number, number])).rect(0, 0, W, 34, 'F');
   doc.setTextColor(255).setFont('helvetica', 'bold').setFontSize(24).text(statusLabel(t), M, 17);
-  doc.setFont('helvetica', 'normal').setFontSize(10).text(`Ticket de control de equipaje en cinta - ${fmtDate(t.closedAt ?? t.createdAt)} ${fmtTime(t.closedAt ?? t.createdAt)}`, M, 27);
+  doc.setFont('helvetica', 'normal').setFontSize(10).text(`Bagtags Aerovalue - ticket de control de equipaje en cinta - ${fmtDate(t.closedAt ?? t.createdAt)} ${fmtTime(t.closedAt ?? t.createdAt)}`, M, 27);
   y = 44;
 
   h2('Control');
@@ -119,7 +119,7 @@ export async function buildTicketPdf(t: Ticket): Promise<Blob> {
   const pages = doc.getNumberOfPages();
   for (let p = 1; p <= pages; p++) {
     doc.setPage(p);
-    doc.setFontSize(8).setTextColor(120).text(`Documento interno. Ticket ${t.id.slice(0, 8)} - pagina ${p}/${pages}`, W / 2, 290, { align: 'center' });
+    doc.setFontSize(8).setTextColor(120).text(`Bagtags Aerovalue - documento interno. Ticket ${t.id.slice(0, 8)} - pagina ${p}/${pages}`, W / 2, 290, { align: 'center' });
   }
   return doc.output('blob');
 }

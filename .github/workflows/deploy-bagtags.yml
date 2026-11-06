@@ -1,6 +1,6 @@
-# Publica la PWA "Lector de Bagtags" en GitHub Pages (HTTPS gratuito).
+# Publica la PWA "Bagtags Aerovalue" en GitHub Pages (HTTPS gratuito).
 # Activar una vez: Settings → Pages → Source: "GitHub Actions".
-name: Desplegar Bagtags PWA
+name: Desplegar Bagtags Aerovalue
 
 on:
   push:

@@ -29,7 +29,7 @@ describe('textos del correo', () => {
     expect(statusLabel(ticket)).toBe('FALTA 1 MALETA');
     expect(statusLabel({ ...ticket, claims: ticket.claims.map((c) => ({ ...c, foundAt: undefined })) })).toBe('FALTAN 2 MALETAS');
     expect(statusLabel({ ...ticket, status: 'ok' })).toBe('TODO OK');
-    expect(emailSubject(ticket)).toBe('[Bagtags] FALTA 1 MALETA · IB3167 · MAD T4S · 05/11/2026 10:32');
+    expect(emailSubject(ticket)).toBe('[Bagtags Aerovalue] FALTA 1 MALETA · IB3167 · MAD T4S · 05/11/2026 10:32');
   });
   it('cuerpo con recogidas, no aparecidas, descartadas y observaciones', () => {
     const b = emailBody(ticket);

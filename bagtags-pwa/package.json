@@ -2,7 +2,7 @@
   "name": "bagtags-pwa",
   "private": true,
   "version": "1.0.0",
-  "description": "Lector de Bagtags — PWA offline: ticket de control de equipaje en cinta con envío del PDF por email",
+  "description": "Bagtags Aerovalue — PWA offline: ticket de control de equipaje en cinta con envío del PDF por email",
   "type": "module",
   "scripts": {
     "dev": "vite",

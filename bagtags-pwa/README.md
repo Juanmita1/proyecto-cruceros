@@ -1,4 +1,4 @@
-# Lector de Bagtags — ticket de control de equipaje en cinta
+# Bagtags Aerovalue — ticket de control de equipaje en cinta
 
 Aplicación web progresiva (PWA) para el personal de seguridad de la sala de recogida de equipajes. El vigilante escanea los **resguardos** de un pasajero (los claim tags pegados en la tarjeta de embarque) y luego vigila la **cinta**. Cada maleta que escanea da un aviso inmediato:
 
@@ -61,7 +61,7 @@ Un navegador no puede mandar por sí solo un correo con adjunto a direcciones fi
 #### 1. Crear el flujo
 1. Entrar en **make.powerautomate.com** con esa cuenta.
 2. Ir a **Crear → Flujo de nube instantáneo**.
-3. Poner de nombre "Bagtags – envío de tickets".
+3. Poner de nombre "Bagtags Aerovalue – envío de tickets".
 4. Elegir el desencadenador **"Cuando se recibe una solicitud HTTP"** y pulsar **Crear**.
 
 #### 2. Configurar el desencadenador
@@ -71,7 +71,7 @@ Un navegador no puede mandar por sí solo un correo con adjunto a direcciones fi
    ```json
    {
      "to": "supervisor@empresa.es;jefe.turno@empresa.es",
-     "subject": "[Bagtags] TODO OK · IB3167 · MAD T4S · 05/11/2026 10:32",
+     "subject": "[Bagtags Aerovalue] TODO OK · IB3167 · MAD T4S · 05/11/2026 10:32",
      "body": "Resultado: TODO OK\nVigilante: TIP12345",
      "attachment": {
        "name": "ticket_MAD_20261105_1032_OK.pdf",
