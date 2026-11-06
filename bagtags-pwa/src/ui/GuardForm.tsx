@@ -17,7 +17,7 @@ export function GuardForm() {
     <div class="screen screen--form" onPointerDown={unlockAudio}>
       <header class="topbar">
         <div class="topbar__title">
-          <strong>Lector de Bagtags</strong>
+          <strong>Bagtags Aerovalue</strong>
           <span>{g ? 'Confirme sus datos' : 'Datos del vigilante'}</span>
         </div>
         <button class="iconbtn" onClick={() => navigate({ name: 'help' })} aria-label="Ayuda">

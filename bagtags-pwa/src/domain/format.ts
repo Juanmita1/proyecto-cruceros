@@ -33,11 +33,11 @@ export function statusLabel(t: Pick<Ticket, 'status' | 'claims'>): string {
   return 'ABIERTO';
 }
 
-/** Asunto del correo: "[Bagtags] TODO OK · IB3167 · MAD T4S · 05/11/2026 10:32". */
+/** Asunto del correo: "[Bagtags Aerovalue] TODO OK · IB3167 · MAD T4S · 05/11/2026 10:32". */
 export function emailSubject(t: Ticket): string {
   const ts = t.closedAt ?? t.createdAt;
   const parts = [statusLabel(t), ticketFlight(t), `${t.guard.airport} ${t.guard.terminal}`.trim(), `${fmtDate(ts)} ${fmtTime(ts)}`].filter(Boolean);
-  return `[Bagtags] ${parts.join(' · ')}`;
+  return `[Bagtags Aerovalue] ${parts.join(' · ')}`;
 }
 
 /** Cuerpo del correo en texto plano (el detalle completo va en el PDF adjunto). */
